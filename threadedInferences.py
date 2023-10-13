@@ -1,37 +1,58 @@
-import multiprocessing
+import queue
 import cv2
 from ultralytics import YOLO
 import numpy as np
+import threading
+
+
+quit = False
 
 def capture_frames(frame_buffer):
-    videoCapture = cv2.VideoCapture("shortCurve.MOV")
+    global quit
+    videoCapture = cv2.VideoCapture("15minuteWalk.MOV")
     while True:
+        if quit:
+            break
         ret, image = videoCapture.read()
         if not ret:
             break
         image = cv2.resize(image, (640, 640))
-        frame_buffer.put(image)
+        frame_buffer.put(item=image)
+
 
 def inference(frame_buffer, result_buffer):
+    global quit
     model = YOLO("V4DataModel.pt")
     while True:
+        if quit:
+            break
         image = frame_buffer.get()
         results = model(image, stream=True)
 
         masks = None
         for r in results:
             masks = r.masks
-        if masks is None:
-            masks = image
 
         result_buffer.put((image, masks))
 
 
 def post_process(result_buffer):
+    global quit
     while True:
-        image, masks = result_buffer.get()
+        if quit:
+            break
+        image = result_buffer.get()[0]
+        masks = result_buffer.get()[1]
         blankImage = np.ones((640, 640, 3), np.uint8) * 210
         coordsArr = []
+
+        if masks is None:
+            cv2.imshow("image", image)
+            key = cv2.waitKey(16)
+            if key == ord('q'):
+                quit = True
+            continue
+
         for coordPair in masks.xy[0]:
             coordsArr.append((int(coordPair[0]), int(coordPair[1])))
         print(coordsArr)
@@ -57,7 +78,8 @@ def post_process(result_buffer):
 
             if centered:
                 cv2.putText(image, "Centered", (0, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (115, 230, 0), 2, cv2.LINE_AA)
-                cv2.putText(blankImage, "Centered", (0, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (115, 230, 0), 2, cv2.LINE_AA)
+                cv2.putText(blankImage, "Centered", (0, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (115, 230, 0), 2,
+                            cv2.LINE_AA)
             else:
                 cv2.putText(image, "Not Centered", (0, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (115, 0, 230), 2, cv2.LINE_AA)
                 cv2.putText(blankImage, "Not Centered", (0, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (115, 0, 230), 2,
@@ -75,17 +97,20 @@ def post_process(result_buffer):
             cv2.line(image, coordsArr[0], coordsArr[len(coordsArr) - 1], (115, 230, 0), 5, cv2.LINE_4)
 
         cv2.imshow("image", image)
-        key = cv2.waitKey(2)
+        key = cv2.waitKey(16)
         if key == ord('q'):
-            break
+            quit = True
+
 
 if __name__ == "__main__":
-    frame_buffer = multiprocessing.Queue()
-    result_buffer = multiprocessing.Queue()
+    # torch.multiprocessing.set_start_method("spawn")
+    frame_buffer = queue.Queue()
+    result_buffer = queue.Queue()
+    # lock = multiprocessing.Lock()
 
-    capture_process = multiprocessing.Process(target=capture_frames, args=(frame_buffer,))
-    inference_process = multiprocessing.Process(target=inference, args=(frame_buffer,result_buffer))
-    post_processing_process = multiprocessing.Process(target=post_process, args=(result_buffer,))
+    capture_process = threading.Thread(target=capture_frames, args=(frame_buffer,))
+    inference_process = threading.Thread(target=inference, args=(frame_buffer, result_buffer))
+    post_processing_process = threading.Thread(target=post_process, args=(result_buffer,))
 
     capture_process.start()
     inference_process.start()
